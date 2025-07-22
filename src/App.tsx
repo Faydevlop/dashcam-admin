@@ -21,10 +21,10 @@ const App = () => {
           console.warn("Failed to parse ICE candidate string:", candidate);
           return null;
         }
-        const [ rest] = parts;
+        const [, foundation, component, protocol, priority, ip, port, type, rest] = parts;
         const candidateObj: RTCIceCandidateInit = {
-          candidate,
-          sdpMid: rest.includes("sdpMid") ? rest.match(/sdpMid (\S+)/)?.[1] || "0" : "0",
+          candidate: `candidate:${foundation} ${component} ${protocol} ${priority} ${ip} ${port} typ ${type}${rest}`,
+          sdpMid: rest.match(/sdpMid (\S+)/)?.[1] || "0",
           sdpMLineIndex: parseInt(rest.match(/sdpMLineIndex (\d+)/)?.[1] || "0"),
           usernameFragment: rest.match(/ufrag (\S+)/)?.[1] || undefined,
         };
@@ -34,17 +34,31 @@ const App = () => {
         return null;
       }
     }
-    return candidate;
+    return candidate as RTCIceCandidateInit;
   };
 
-  const startAudioCall = () => {
+  const startAudioCall = async () => {
     setCallStatus("Initiating audio call via socket...");
-    socket.emit("start-call", { deviceId: "dashcam-001" });
-    setIsCallActive(true);
-    setIsVideoCall(false);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+      });
+      localStreamRef.current = stream;
+      console.log("Admin mic access granted, tracks:", stream.getTracks());
+      socket.emit("start-call", { deviceId: "dashcam-001" });
+      setIsCallActive(true);
+      setIsVideoCall(false);
+    } catch (err: any) {
+      console.error("Admin mic access error:", err);
+      setCallStatus(`Microphone error: ${err.name} - ${err.message}`);
+    }
   };
 
-  const startVideoCall = () => {
+  const startVideoCall = async () => {
     setCallStatus("Initiating video call via socket...");
     socket.emit("start-video-call", { deviceId: "dashcam-001" });
     setIsCallActive(true);
@@ -108,44 +122,47 @@ const App = () => {
   };
 
   const handleTrackReceived = (event: RTCTrackEvent) => {
-    console.log("Track kind:", event.track.kind);
-   
+    console.log("Track received:", event.track.kind, {
+      id: event.track.id,
+      enabled: event.track.enabled,
+      readyState: event.track.readyState,
+    });
 
-    if (event.track.kind === "video" && videoRef.current) {
-      setTimeout(() => {
-        if (videoRef.current) {
-          const videoStream = new MediaStream([event.track]);
-          videoRef.current.srcObject = videoStream;
-          videoRef.current.muted = true;
+    const [remoteStream] = event.streams;
 
-          videoRef.current.onloadedmetadata = () => {
-            setVideoStats(`${videoRef.current?.videoWidth}x${videoRef.current?.videoHeight}`);
-          };
-          videoRef.current.onplaying = () => {
-            setCallStatus("Video playing successfully");
-          };
-          videoRef.current.onerror = (e) => {
-            console.error("Video error:", e);
-            setCallStatus("Video error - check console");
-          };
+    if (event.track.kind === "video" && videoRef.current && isVideoCall) {
+      videoRef.current.srcObject = remoteStream;
+      videoRef.current.muted = true;
 
-          videoRef.current.play().then(() => {
-            setCallStatus("Video connected and playing");
-          }).catch((err) => {
-            console.error("Video autoplay failed:", err);
-            setCallStatus("Video ready - Click to play");
-          });
-        }
-      }, 100);
+      videoRef.current.onloadedmetadata = () => {
+        setVideoStats(`${videoRef.current?.videoWidth}x${videoRef.current?.videoHeight}`);
+        console.log("Video metadata loaded:", videoStats);
+      };
+      videoRef.current.onplaying = () => {
+        setCallStatus("Video playing successfully");
+      };
+      videoRef.current.onerror = (e) => {
+        console.error("Video error:", e);
+        setCallStatus("Video error - check console");
+      };
+
+      videoRef.current.play().then(() => {
+        console.log("Video playback started");
+        setCallStatus("Video connected and playing");
+      }).catch((err) => {
+        console.error("Video autoplay failed:", err);
+        setCallStatus("Video ready - Click to play");
+      });
     }
 
     if (event.track.kind === "audio" && audioRef.current) {
-      const audioStream = new MediaStream([event.track]);
-      audioRef.current.srcObject = audioStream;
+      audioRef.current.srcObject = remoteStream;
       audioRef.current.play().then(() => {
-        setupAudioLevelMonitoring(audioStream);
+        console.log("Audio playback started");
+        setupAudioLevelMonitoring(remoteStream);
       }).catch((err) => {
         console.error("Audio autoplay failed:", err);
+        setCallStatus(`Audio play error: ${err.message}`);
       });
     }
   };
@@ -153,11 +170,12 @@ const App = () => {
   useEffect(() => {
     socket.on("connect", () => {
       console.log("Socket connected:", socket.id);
+      setCallStatus("Socket connected, ready to call");
     });
 
-    socket.on("connect_error", (err:any) => {
+    socket.on("connect_error", (err: any) => {
       console.error("Socket connection error:", err);
-      setCallStatus("Socket connection failed");
+      setCallStatus(`Socket connection failed: ${err.message}`);
     });
 
     socket.on("webrtc-signal", async ({ from, data }: { from: string; data: any }) => {
@@ -165,7 +183,7 @@ const App = () => {
 
       try {
         if (data.type === "ready") {
-          console.log("Dashcam ready for audio call");
+          console.log("Dashcam ready for audio call, socket ID:", from);
           setCallStatus("Dashcam ready - Creating audio offer...");
 
           sessionStorage.setItem("dashcam-socket-id", from);
@@ -194,7 +212,11 @@ const App = () => {
 
           localStreamRef.current = localStream;
           localStream.getTracks().forEach((track) => {
-            console.log(`Adding ${track.kind} track to peer connection`);
+            console.log(`Adding ${track.kind} track to peer connection`, {
+              id: track.id,
+              enabled: track.enabled,
+              readyState: track.readyState,
+            });
             pc.addTrack(track, localStream);
           });
 
@@ -202,7 +224,12 @@ const App = () => {
 
           pc.onicecandidate = (event) => {
             if (event.candidate) {
-              console.log("Sending ICE candidate:", event.candidate);
+              console.log("Sending ICE candidate:", {
+                candidate: event.candidate.candidate,
+                sdpMid: event.candidate.sdpMid,
+                sdpMLineIndex: event.candidate.sdpMLineIndex,
+                usernameFragment: event.candidate.usernameFragment,
+              });
               socket.emit("webrtc-signal", {
                 to: from,
                 data: {
@@ -217,6 +244,15 @@ const App = () => {
             }
           };
 
+          pc.oniceconnectionstatechange = () => {
+            console.log("ICE connection state:", pc.iceConnectionState);
+            if (pc.iceConnectionState === "failed" || pc.iceConnectionState === "disconnected") {
+              setCallStatus("ICE connection failed");
+              setIsCallActive(false);
+              socket.emit("call-ended", { to: from });
+            }
+          };
+
           pc.onconnectionstatechange = () => {
             console.log("Audio connection state:", pc.connectionState);
             if (pc.connectionState === "connected") {
@@ -224,6 +260,7 @@ const App = () => {
             } else if (pc.connectionState === "failed") {
               setCallStatus("Audio connection failed");
               setIsCallActive(false);
+              socket.emit("call-ended", { to: from });
             } else {
               setCallStatus(`Audio connecting... (${pc.connectionState})`);
             }
@@ -232,6 +269,7 @@ const App = () => {
           const offer = await pc.createOffer({ offerToReceiveAudio: true });
           await pc.setLocalDescription(offer);
           socket.emit("webrtc-signal", { to: from, data: pc.localDescription });
+          console.log("Sent audio offer to:", from);
           setCallStatus("Audio offer sent...");
         } else if (data.type === "answer") {
           console.log("Received audio answer:", data);
@@ -245,13 +283,14 @@ const App = () => {
           const candidate = parseIceCandidate(data.candidate);
           if (candidate && pcRef.current && pcRef.current.remoteDescription) {
             await pcRef.current.addIceCandidate(new RTCIceCandidate(candidate));
+            console.log("Added ICE candidate:", candidate);
           } else {
             console.warn("Invalid or unprocessable ICE candidate:", data.candidate);
           }
         }
-      } catch (err) {
+      } catch (err: any) {
         console.error("Audio WebRTC error:", err);
-        setCallStatus("Audio connection error");
+        setCallStatus(`Audio connection error: ${err.message}`);
       }
     });
 
@@ -260,7 +299,7 @@ const App = () => {
 
       try {
         if (data.type === "ready") {
-          console.log("Dashcam ready for video call");
+          console.log("Dashcam ready for video call, socket ID:", from);
           setCallStatus("Dashcam ready - Creating video offer...");
 
           sessionStorage.setItem("dashcam-socket-id", from);
@@ -283,7 +322,12 @@ const App = () => {
 
           pc.onicecandidate = (event) => {
             if (event.candidate) {
-              console.log("Sending ICE candidate:", event.candidate);
+              console.log("Sending ICE candidate:", {
+                candidate: event.candidate.candidate,
+                sdpMid: event.candidate.sdpMid,
+                sdpMLineIndex: event.candidate.sdpMLineIndex,
+                usernameFragment: event.candidate.usernameFragment,
+              });
               socket.emit("webrtc-video-signal", {
                 to: from,
                 data: {
@@ -298,6 +342,15 @@ const App = () => {
             }
           };
 
+          pc.oniceconnectionstatechange = () => {
+            console.log("ICE connection state:", pc.iceConnectionState);
+            if (pc.iceConnectionState === "failed" || pc.iceConnectionState === "disconnected") {
+              setCallStatus("ICE connection failed");
+              setIsCallActive(false);
+              socket.emit("video-call-ended", { to: from });
+            }
+          };
+
           pc.onconnectionstatechange = () => {
             console.log("Video connection state:", pc.connectionState);
             if (pc.connectionState === "connected") {
@@ -305,6 +358,7 @@ const App = () => {
             } else if (pc.connectionState === "failed") {
               setCallStatus("Video connection failed");
               setIsCallActive(false);
+              socket.emit("video-call-ended", { to: from });
             } else {
               setCallStatus(`Video connecting... (${pc.connectionState})`);
             }
@@ -316,6 +370,7 @@ const App = () => {
           });
           await pc.setLocalDescription(offer);
           socket.emit("webrtc-video-signal", { to: from, data: pc.localDescription });
+          console.log("Sent video offer to:", from);
           setCallStatus("Video offer sent...");
         } else if (data.type === "answer") {
           console.log("Received video answer:", data);
@@ -329,13 +384,14 @@ const App = () => {
           const candidate = parseIceCandidate(data.candidate);
           if (candidate && pcRef.current && pcRef.current.remoteDescription) {
             await pcRef.current.addIceCandidate(new RTCIceCandidate(candidate));
+            console.log("Added ICE candidate:", candidate);
           } else {
             console.warn("Invalid or unprocessable ICE candidate:", data.candidate);
           }
         }
-      } catch (err) {
+      } catch (err: any) {
         console.error("Video WebRTC error:", err);
-        setCallStatus("Video connection error");
+        setCallStatus(`Video connection error: ${err.message}`);
       }
     });
 
@@ -376,15 +432,19 @@ const App = () => {
         setCallStatus("Video playing");
       }).catch((err) => {
         console.error("Manual video play error:", err);
-        setCallStatus("Video play failed");
+        setCallStatus(`Video play error: ${err.message}`);
       });
     }
   };
 
   const handleAudioClick = () => {
     if (audioRef.current) {
-      audioRef.current.play().catch((err) => console.error("Audio play error:", err));
-      setCallStatus("Audio enabled");
+      audioRef.current.play().then(() => {
+        setCallStatus("Audio playing");
+      }).catch((err) => {
+        console.error("Audio play error:", err);
+        setCallStatus(`Audio play error: ${err.message}`);
+      });
     }
   };
 
@@ -506,25 +566,29 @@ const App = () => {
         </div>
       )}
 
-      <div style={{ marginBottom: "20px", padding: "15px", backgroundColor: "#f9f9f9", borderRadius: "8px" }}>
-        <h3 style={{ margin: "0 0 10px 0", fontSize: "16px" }}>Dashcam Audio</h3>
-        <audio
-          ref={audioRef}
-          controls
-          onClick={handleAudioClick}
-          style={{ width: "100%" }}
-          autoPlay
-          playsInline
-        />
-        <div style={{ fontSize: "12px", color: "#666", marginTop: "5px" }}>
-          Audio from dashcam-001
+      {isCallActive && (
+        <div style={{ marginBottom: "20px", padding: "15px", backgroundColor: "#f9f9f9", borderRadius: "8px" }}>
+          <h3 style={{ margin: "0 0 10px 0", fontSize: "16px" }}>Dashcam Audio</h3>
+          <audio
+            ref={audioRef}
+            controls
+            onClick={handleAudioClick}
+            style={{ width: "100%" }}
+            autoPlay
+            playsInline
+          />
+          <div style={{ fontSize: "12px", color: "#666", marginTop: "5px" }}>
+            Audio from dashcam-001
+          </div>
         </div>
-      </div>
+      )}
 
       <div style={{ marginTop: "10px", fontSize: "12px", color: "#666" }}>
         Target Device: dashcam-001
         <br />
         Call Type: {isCallActive ? (isVideoCall ? "Video Call Active" : "Audio Call Active") : "Standby"}
+        <br />
+        Socket ID: {socket.id || "Not connected"}
       </div>
     </div>
   );
