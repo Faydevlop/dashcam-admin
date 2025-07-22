@@ -1,6 +1,3 @@
 import { io } from "socket.io-client";
 
-export const socket = io("https://3d6a27b987fb.ngrok-free.app", {
-  transports: ["websocket"],
-  secure: true,
-});
+export const socket = io("http://localhost:7008"); // Replace with your backend
