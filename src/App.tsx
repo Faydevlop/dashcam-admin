@@ -84,30 +84,35 @@ const App = () => {
 
   const handleTrackReceived = (event: RTCTrackEvent) => {
     console.log("Track kind:", event.track.kind);
-    
+    const [remoteStream] = event.streams;
 
     if (event.track.kind === "video" && videoRef.current) {
-      const videoStream = new MediaStream([event.track]);
-      videoRef.current.srcObject = videoStream;
-      videoRef.current.muted = true;
+      // Delay setting srcObject to avoid AbortError
+      setTimeout(() => {
+        if (videoRef.current) {
+          const videoStream = new MediaStream([event.track]);
+          videoRef.current.srcObject = videoStream;
+          videoRef.current.muted = true;
 
-      videoRef.current.onloadedmetadata = () => {
-        setVideoStats(`${videoRef.current?.videoWidth}x${videoRef.current?.videoHeight}`);
-      };
-      videoRef.current.onplaying = () => {
-        setCallStatus("Video playing successfully");
-      };
-      videoRef.current.onerror = (e) => {
-        console.error("Video error:", e);
-        setCallStatus("Video error - check console");
-      };
+          videoRef.current.onloadedmetadata = () => {
+            setVideoStats(`${videoRef.current?.videoWidth}x${videoRef.current?.videoHeight}`);
+          };
+          videoRef.current.onplaying = () => {
+            setCallStatus("Video playing successfully");
+          };
+          videoRef.current.onerror = (e) => {
+            console.error("Video error:", e);
+            setCallStatus("Video error - check console");
+          };
 
-      videoRef.current.play().then(() => {
-        setCallStatus("Video connected and playing");
-      }).catch((err) => {
-        console.error("Video autoplay failed:", err);
-        setCallStatus("Video ready - Click to play");
-      });
+          videoRef.current.play().then(() => {
+            setCallStatus("Video connected and playing");
+          }).catch((err) => {
+            console.error("Video autoplay failed:", err);
+            setCallStatus("Video ready - Click to play");
+          });
+        }
+      }, 100);
     }
 
     if (event.track.kind === "audio" && audioRef.current) {
@@ -122,6 +127,15 @@ const App = () => {
   };
 
   useEffect(() => {
+    socket.on("connect", () => {
+      console.log("Socket connected:", socket.id);
+    });
+
+    socket.on("connect_error", (err) => {
+      console.error("Socket connection error:", err);
+      setCallStatus("Socket connection failed");
+    });
+
     socket.on("webrtc-signal", async ({ from, data }: { from: string; data: any }) => {
       if (isVideoCall) return;
 
@@ -136,6 +150,7 @@ const App = () => {
             iceServers: [
               { urls: "stun:stun.l.google.com:19302" },
               { urls: "stun:stun1.l.google.com:19302" },
+              { urls: "stun:stun2.l.google.com:19302" },
             ],
           });
           pcRef.current = pc;
@@ -158,7 +173,18 @@ const App = () => {
 
           pc.onicecandidate = (event) => {
             if (event.candidate) {
-              socket.emit("webrtc-signal", { to: from, data: event.candidate });
+              console.log("Sending ICE candidate:", event.candidate);
+              socket.emit("webrtc-signal", {
+                to: from,
+                data: {
+                  candidate: {
+                    candidate: event.candidate.candidate,
+                    sdpMid: event.candidate.sdpMid,
+                    sdpMLineIndex: event.candidate.sdpMLineIndex,
+                    usernameFragment: event.candidate.usernameFragment,
+                  },
+                },
+              });
             }
           };
 
@@ -179,16 +205,19 @@ const App = () => {
           socket.emit("webrtc-signal", { to: from, data: pc.localDescription });
           setCallStatus("Audio offer sent...");
         } else if (data.type === "answer") {
-          console.log("Received audio answer");
+          console.log("Received audio answer:", data);
           const pc = pcRef.current;
           if (pc) {
             await pc.setRemoteDescription(new RTCSessionDescription(data));
             setCallStatus("Audio answer received...");
           }
         } else if (data.candidate) {
+          console.log("Received ICE candidate:", data.candidate);
           const pc = pcRef.current;
-          if (pc && pc.remoteDescription) {
-            await pc.addIceCandidate(new RTCIceCandidate(data));
+          if (pc && pc.remoteDescription && data.candidate.candidate && data.candidate.sdpMid !== undefined && data.candidate.sdpMLineIndex !== undefined) {
+            await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+          } else {
+            console.warn("Invalid ICE candidate received:", data.candidate);
           }
         }
       } catch (err) {
@@ -211,37 +240,34 @@ const App = () => {
             iceServers: [
               { urls: "stun:stun.l.google.com:19302" },
               { urls: "stun:stun1.l.google.com:19302" },
+              { urls: "stun:stun2.l.google.com:19302" },
             ],
           });
           pcRef.current = pc;
-
-          // Only request audio for admin
-          const localStream = await navigator.mediaDevices.getUserMedia({
-            audio: {
-              echoCancellation: true,
-              noiseSuppression: true,
-              autoGainControl: true,
-            },
-          });
-
-          localStreamRef.current = localStream;
-          localStream.getTracks().forEach((track) => {
-            console.log(`Admin adding ${track.kind} track to peer connection`);
-            pc.addTrack(track, localStream);
-          });
 
           pc.ontrack = handleTrackReceived;
 
           pc.onicecandidate = (event) => {
             if (event.candidate) {
-              socket.emit("webrtc-video-signal", { to: from, data: event.candidate });
+              console.log("Sending ICE candidate:", event.candidate);
+              socket.emit("webrtc-video-signal", {
+                to: from,
+                data: {
+                  candidate: {
+                    candidate: event.candidate.candidate,
+                    sdpMid: event.candidate.sdpMid,
+                    sdpMLineIndex: event.candidate.sdpMLineIndex,
+                    usernameFragment: event.candidate.usernameFragment,
+                  },
+                },
+              });
             }
           };
 
           pc.onconnectionstatechange = () => {
             console.log("Video connection state:", pc.connectionState);
             if (pc.connectionState === "connected") {
-              setCallStatus("Video and audio connected");
+              setCallStatus("Video connected");
             } else if (pc.connectionState === "failed") {
               setCallStatus("Video connection failed");
               setIsCallActive(false);
@@ -258,16 +284,19 @@ const App = () => {
           socket.emit("webrtc-video-signal", { to: from, data: pc.localDescription });
           setCallStatus("Video offer sent...");
         } else if (data.type === "answer") {
-          console.log("Received video answer");
+          console.log("Received video answer:", data);
           const pc = pcRef.current;
           if (pc) {
             await pc.setRemoteDescription(new RTCSessionDescription(data));
             setCallStatus("Video answer received...");
           }
         } else if (data.candidate) {
+          console.log("Received ICE candidate:", data.candidate);
           const pc = pcRef.current;
-          if (pc && pc.remoteDescription) {
-            await pc.addIceCandidate(new RTCIceCandidate(data));
+          if (pc && pc.remoteDescription && data.candidate.candidate && data.candidate.sdpMid !== undefined && data.candidate.sdpMLineIndex !== undefined) {
+            await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+          } else {
+            console.warn("Invalid ICE candidate received:", data.candidate);
           }
         }
       } catch (err) {
@@ -296,6 +325,8 @@ const App = () => {
     });
 
     return () => {
+      socket.off("connect");
+      socket.off("connect_error");
       socket.off("webrtc-signal");
       socket.off("webrtc-video-signal");
       socket.off("call-ended");
