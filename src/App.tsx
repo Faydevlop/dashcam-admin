@@ -62,14 +62,14 @@ const App = () => {
   };
 
   useEffect(() => {
-    let dashcamSocketId: string | null = null;
+  
 
     socket.on("webrtc-signal", async ({ from, data }: { from: string; data: any }) => {
       try {
         if (data.type === "ready") {
           console.log("Dashcam is ready, creating offer...");
           setCallStatus("Dashcam ready - Creating offer...");
-          dashcamSocketId = from;
+         
 
           const pc = new RTCPeerConnection({
             iceServers: [
