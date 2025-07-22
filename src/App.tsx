@@ -84,7 +84,7 @@ const App = () => {
 
   const handleTrackReceived = (event: RTCTrackEvent) => {
     console.log("Track kind:", event.track.kind);
-    const [remoteStream] = event.streams;
+    
 
     if (event.track.kind === "video" && videoRef.current) {
       const videoStream = new MediaStream([event.track]);
