@@ -12,16 +12,41 @@ const App = () => {
   const [isVideoCall, setIsVideoCall] = useState(false);
   const [videoStats, setVideoStats] = useState<string>("");
 
+  // Parse string-based ICE candidate to RTCIceCandidateInit
+  const parseIceCandidate = (candidate: RTCIceCandidateInit | string): RTCIceCandidateInit | null => {
+    if (typeof candidate === "string") {
+      try {
+        const parts = candidate.match(/candidate:(\S+) (\d+) (\w+) (\d+) (\S+) (\d+) typ (\w+)(.*)/);
+        if (!parts) {
+          console.warn("Failed to parse ICE candidate string:", candidate);
+          return null;
+        }
+        const [ rest] = parts;
+        const candidateObj: RTCIceCandidateInit = {
+          candidate,
+          sdpMid: rest.includes("sdpMid") ? rest.match(/sdpMid (\S+)/)?.[1] || "0" : "0",
+          sdpMLineIndex: parseInt(rest.match(/sdpMLineIndex (\d+)/)?.[1] || "0"),
+          usernameFragment: rest.match(/ufrag (\S+)/)?.[1] || undefined,
+        };
+        return candidateObj;
+      } catch (err) {
+        console.error("Error parsing ICE candidate string:", err);
+        return null;
+      }
+    }
+    return candidate;
+  };
+
   const startAudioCall = () => {
     setCallStatus("Initiating audio call via socket...");
-    socket.emit("start-call", { deviceId: "dashcam-002" });
+    socket.emit("start-call", { deviceId: "dashcam-001" });
     setIsCallActive(true);
     setIsVideoCall(false);
   };
 
   const startVideoCall = () => {
     setCallStatus("Initiating video call via socket...");
-    socket.emit("start-video-call", { deviceId: "dashcam-002" });
+    socket.emit("start-video-call", { deviceId: "dashcam-001" });
     setIsCallActive(true);
     setIsVideoCall(true);
   };
@@ -84,10 +109,9 @@ const App = () => {
 
   const handleTrackReceived = (event: RTCTrackEvent) => {
     console.log("Track kind:", event.track.kind);
-    
+   
 
     if (event.track.kind === "video" && videoRef.current) {
-      // Delay setting srcObject to avoid AbortError
       setTimeout(() => {
         if (videoRef.current) {
           const videoStream = new MediaStream([event.track]);
@@ -131,7 +155,7 @@ const App = () => {
       console.log("Socket connected:", socket.id);
     });
 
-    socket.on("connect_error", (err) => {
+    socket.on("connect_error", (err:any) => {
       console.error("Socket connection error:", err);
       setCallStatus("Socket connection failed");
     });
@@ -151,6 +175,11 @@ const App = () => {
               { urls: "stun:stun.l.google.com:19302" },
               { urls: "stun:stun1.l.google.com:19302" },
               { urls: "stun:stun2.l.google.com:19302" },
+              {
+                urls: "turn:openrelay.metered.ca:80",
+                username: "openrelay",
+                credential: "openrelay",
+              },
             ],
           });
           pcRef.current = pc;
@@ -213,11 +242,11 @@ const App = () => {
           }
         } else if (data.candidate) {
           console.log("Received ICE candidate:", data.candidate);
-          const pc = pcRef.current;
-          if (pc && pc.remoteDescription && data.candidate.candidate && data.candidate.sdpMid !== undefined && data.candidate.sdpMLineIndex !== undefined) {
-            await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+          const candidate = parseIceCandidate(data.candidate);
+          if (candidate && pcRef.current && pcRef.current.remoteDescription) {
+            await pcRef.current.addIceCandidate(new RTCIceCandidate(candidate));
           } else {
-            console.warn("Invalid ICE candidate received:", data.candidate);
+            console.warn("Invalid or unprocessable ICE candidate:", data.candidate);
           }
         }
       } catch (err) {
@@ -241,6 +270,11 @@ const App = () => {
               { urls: "stun:stun.l.google.com:19302" },
               { urls: "stun:stun1.l.google.com:19302" },
               { urls: "stun:stun2.l.google.com:19302" },
+              {
+                urls: "turn:openrelay.metered.ca:80",
+                username: "openrelay",
+                credential: "openrelay",
+              },
             ],
           });
           pcRef.current = pc;
@@ -292,11 +326,11 @@ const App = () => {
           }
         } else if (data.candidate) {
           console.log("Received ICE candidate:", data.candidate);
-          const pc = pcRef.current;
-          if (pc && pc.remoteDescription && data.candidate.candidate && data.candidate.sdpMid !== undefined && data.candidate.sdpMLineIndex !== undefined) {
-            await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+          const candidate = parseIceCandidate(data.candidate);
+          if (candidate && pcRef.current && pcRef.current.remoteDescription) {
+            await pcRef.current.addIceCandidate(new RTCIceCandidate(candidate));
           } else {
-            console.warn("Invalid ICE candidate received:", data.candidate);
+            console.warn("Invalid or unprocessable ICE candidate:", data.candidate);
           }
         }
       } catch (err) {
@@ -465,7 +499,7 @@ const App = () => {
             }}
           />
           <div style={{ fontSize: "12px", color: "#666", marginTop: "5px" }}>
-            Live video from dashcam-002 {videoStats && `(${videoStats})`}
+            Live video from dashcam-001 {videoStats && `(${videoStats})`}
             <br />
             Click video if it doesn't auto-play
           </div>
@@ -483,12 +517,12 @@ const App = () => {
           playsInline
         />
         <div style={{ fontSize: "12px", color: "#666", marginTop: "5px" }}>
-          Audio from dashcam-002
+          Audio from dashcam-001
         </div>
       </div>
 
       <div style={{ marginTop: "10px", fontSize: "12px", color: "#666" }}>
-        Target Device: dashcam-002
+        Target Device: dashcam-001
         <br />
         Call Type: {isCallActive ? (isVideoCall ? "Video Call Active" : "Audio Call Active") : "Standby"}
       </div>
