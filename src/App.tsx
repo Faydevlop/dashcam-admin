@@ -14,14 +14,14 @@ const App = () => {
 
   const startAudioCall = () => {
     setCallStatus("Initiating audio call via socket...");
-    socket.emit("start-call", { deviceId: "dashcam-001" });
+    socket.emit("start-call", { deviceId: "dashcam-002" });
     setIsCallActive(true);
     setIsVideoCall(false);
   };
 
   const startVideoCall = () => {
     setCallStatus("Initiating video call via socket...");
-    socket.emit("start-video-call", { deviceId: "dashcam-001" });
+    socket.emit("start-video-call", { deviceId: "dashcam-002" });
     setIsCallActive(true);
     setIsVideoCall(true);
   };
@@ -465,7 +465,7 @@ const App = () => {
             }}
           />
           <div style={{ fontSize: "12px", color: "#666", marginTop: "5px" }}>
-            Live video from dashcam-001 {videoStats && `(${videoStats})`}
+            Live video from dashcam-002 {videoStats && `(${videoStats})`}
             <br />
             Click video if it doesn't auto-play
           </div>
@@ -483,12 +483,12 @@ const App = () => {
           playsInline
         />
         <div style={{ fontSize: "12px", color: "#666", marginTop: "5px" }}>
-          Audio from dashcam-001
+          Audio from dashcam-002
         </div>
       </div>
 
       <div style={{ marginTop: "10px", fontSize: "12px", color: "#666" }}>
-        Target Device: dashcam-001
+        Target Device: dashcam-002
         <br />
         Call Type: {isCallActive ? (isVideoCall ? "Video Call Active" : "Audio Call Active") : "Standby"}
       </div>
